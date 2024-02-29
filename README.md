@@ -1,0 +1,1 @@
+# spline_model_MARS_GAM
