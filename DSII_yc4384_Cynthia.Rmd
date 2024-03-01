@@ -1,0 +1,117 @@
+---
+title: "HW3_yc4384"
+author: "Yangyang Chen"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret) 
+library(tidymodels) 
+library(splines)
+library(mgcv)
+library(pdp)
+library(earth) 
+library(tidyverse) 
+library(ggplot2)
+library(viridis)
+
+knitr::opts_chunk$set(
+	echo = TRUE,
+	warning = FALSE,
+	fig.width = 8, 
+  fig.height = 6,
+  out.width = "90%"
+)
+
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+```
+
+## Problem_1
+
+In this exercise, we explore the application of nonlinear models to analyze the “College” dataset, comprising statistics from 565 US colleges as reported in a past issue of US News and World Report. The response variable is the out-of-state tuition (Outstate). 
+
+### Data Importing and Cleaning
+
+
+```{r}
+college_df = 
+  read.csv("College.csv", header = TRUE) |> 
+  janitor::clean_names() |> 
+  mutate(
+    out_state = outstate
+  ) |> 
+  select(-outstate)
+colnames(college_df)
+# matrix of predictors
+x = model.matrix(out_state ~ ., college_df)[, -1] # vector of response
+y = college_df$out_state
+```
+
+Find Nonlinear Variables:
+```{r}
+scatterplots <- lapply(names(college_df)[-c(1,18)], function(var) {
+  ggplot(data = college_df, aes_string(x = var, y = "out_state")) +
+  geom_point(color="darkgreen", size = 0.1, alpha = 0.3) +  
+  theme_minimal() +  
+  labs(title = paste("outstate vs.", var),
+       x = var, y = "Outstate") + 
+  theme(axis.text = element_text(size = 5),  # Adjust font size
+        legend.position = "none") 
+})
+
+gridExtra::grid.arrange(grobs = scatterplots, ncol = 4)
+```
+We use scatterplot to explore the relationship between the `out_state` and other variables. The variable `books`, `perc.alumni` and `s_f_ratio` shows potentially nonlinear trend.
+
+### (a) Fit smoothing spline models to predict out-of-state tuition (Outstate) using the percentage of alumni who donate (perc.alumni) as the only predictor, across a range of degrees of freedom. Plot the model fits for each degree of freedom.
+
+```{r}
+perc.grid = seq(from = -10, to = 50, by = 1)
+fit.ss.percs =
+  perc.grid |> 
+  lapply(function(df) smooth.spline(college_df$perc_alumni, college_df$out_state, df = perc.grid))
+
+# 
+# fit.ss.perc = 
+#   smooth.spline(college_df$perc, college_df$out_state) 
+# fit.ss.perc$df
+# fit.ss.perc$gcv
+```
+
+```{r}
+plot_data = 
+  data.frame(x = college_df$perc_alumni) |> 
+  mutate(
+    across(everything(), ~ predict(fit.ss.percs[[1]], .)$y)
+    )
+
+names(plot_data)[-1] = paste0("y_df_", perc.grid)
+
+plot_data = reshape2::melt(plot_data, id.vars = "x", variable.name = "degree_of_freedom", value.name = "y")
+
+ggplot(plot_data, aes(x = x, y = y, color = degree_of_freedom)) +
+  geom_point(data = college_df, aes(x = perc_alumni, y = out_state), alpha = 0.6) +
+  geom_line(aes(group = degree_of_freedom), size = 1) +
+  labs(title = "Smoothing Spline Fits Across Degrees of Freedom",
+       x = "Percentage of Alumni Who Donate",
+       y = "Out-of-State Tuition") +
+  scale_color_gradient(low = "blue", high = "red") +
+  theme_minimal()
+# perc.grid = seq(from = -10, to = 110, by = 1)
+# pred.ss.perc = predict(fit.ss.perc, x = perc.grid)
+# pred.ss.df = data.frame(pred = pred.ss.perc$y, perc_alumni = perc.grid)
+# p = ggplot(data = college_df, aes(x = perc_alumni, y = out_state)) + geom_point(color = rgb(.2, .4, .2, .5))
+# p+geom_line(aes(x = perc_alumni, y = pred), data = pred.ss.df,
+# color = rgb(.8, .1, .1, 1)) + theme_bw()
+```
+

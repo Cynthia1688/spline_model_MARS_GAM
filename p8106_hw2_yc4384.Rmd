@@ -1,0 +1,238 @@
+---
+title: "DSII_HW2_yc4384"
+author: "Yangyang Chen"
+output:
+  pdf_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '2'
+header-includes:
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+- \pagestyle{fancy}
+- \fancyhead[R]{\thepage}
+- \fancypagestyle{plain}{\pagestyle{fancy}}
+--- 
+
+\newpage
+
+```{r setup, include=FALSE, echo=TRUE}
+# This chunk loads all the packages used in this homework
+library(caret) 
+library(splines)
+library(mgcv)
+library(pdp)
+library(earth)
+library(ggplot2)
+library(tidyverse)
+library(viridis)
+
+knitr::opts_chunk$set(
+	echo = TRUE,
+	warning = FALSE,
+	fig.width = 8, 
+  fig.height = 6,
+  out.width = "90%"
+)
+
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+```
+
+### College Dataset
+
+In this exercise, we explore the application of nonlinear models to analyze the “College” dataset, comprising statistics from 565 US colleges as reported in a past issue of US News and World Report. The response variable is the out-of-state tuition (Outstate). The predictors are
+
+### EDA
+
+Load data set from "College.csv"
+```{r input_train, message=FALSE}
+college_df <- readr::read_csv("College.csv")[-1] |> 
+  janitor::clean_names()#remove college names
+```
+
+Partition the dataset into two parts: training data (80%) and test data (20%)
+```{r split}
+set.seed(1)
+rowTrain <- createDataPartition(y = college_df$outstate, p = 0.8, list = FALSE)
+```
+   
+Perform exploratory data analysis using the training data:
+```{r EDA, message=FALSE, fig.width = 10, fig.height = 10, out.width="90%"}
+train.set <- college_df[rowTrain,]
+
+x <- train.set |> 
+  select(-outstate)
+y <- train.set$outstate
+
+theme1 <- trellis.par.get()
+theme1$plot.symbol$col <- rgb(.2, .4, .2, .5)
+theme1$plot.symbol$pch <- 16
+theme1$plot.line$col <- rgb(.8, .1, .1, 1)
+theme1$plot.line$lwd <- 2
+theme1$strip.background$col <- rgb(.0, .2, .6, .2)
+trellis.par.set(theme1)
+
+# Scatter plots
+featurePlot(x, y, plot = "scatter", labels = c("","Out-of-state Tuition"),
+            type = c("p"), layout = c(4, 4))
+```
+
+From the scatter plots above we see that most of the predictors are not linearly associated with response variable (Outstate). For example, data points from plots of $accept$, $enroll$, $f_undergrad$, $p_undergrad$, $personal$ are clustered in the left side of the plot. This suggests that we may need to use nonlinear model to model our data.
+
+## (a) Fit smoothing spline models to predict out-of-state tuition (Outstate) using the percentage of alumni who donate (perc.alumni) as the only predictor, across a range of degrees of freedom. Plot the model fits for each degree of freedom. 
+
+### Range of degrees of freedom
+
+$df$ ranges from $(1,nx]$, nx the number of unique x values, in this case, number of unique `perc_alumni` values
+
+```{r ss_df}
+perc_alumni.grid <- seq(from = min(unique(train.set$perc_alumni))-10, to=max(unique(train.set$perc_alumni))+10, by = 1)
+
+fit.ss <- smooth.spline(train.set$perc_alumni, train.set$outstate, lambda = 0.03, cv = FALSE)
+fit.ss$df
+
+pred.ss <- predict(fit.ss,
+                   x = perc_alumni.grid)
+
+pred.ss.df <- data.frame(pred = pred.ss$y,
+                         perc_alumni = perc_alumni.grid)
+
+p <- ggplot(data = train.set, aes(x = perc_alumni, y = outstate)) +
+     geom_point(color = rgb(.2, .4, .2, .5))
+
+p +
+geom_line(aes(x = perc_alumni.grid, y = pred), data = pred.ss.df,
+          color = rgb(.8, .1, .1, 1)) + theme_bw()
+```
+
+The smoothing spline model fitted using a range of degrees of freedom is 4.59127 with $\lambda=0.03$.
+
+Now we can use cross-validation to select the degrees of freedom:
+
+```{r ss_cv}
+# Use CV
+fit.ss.cv <- smooth.spline(train.set$perc_alumni, train.set$outstate, cv = TRUE)
+fit.ss.cv$df
+fit.ss.cv$lambda
+
+pred.ss.cv <- predict(fit.ss.cv,
+                   x = perc_alumni.grid)
+
+pred.ss.df.cv <- data.frame(pred = pred.ss.cv$y,
+                         perc_alumni = perc_alumni.grid)
+
+p +
+geom_line(aes(x = perc_alumni.grid, y = pred), data = pred.ss.df.cv,
+          color = rgb(.8, .1, .1, 1)) + theme_bw()
+```
+The smoothing spline model fitted using CV has degrees of freedom is 4.508428 with $\lambda=0.03274646$.
+
+## (b) Train a multivariate adaptive regression spline (MARS) model using all the predictors. Report the final model. Present the partial dependence plot of an arbitrary predictor in your final model. Report the test error.
+
+### Build the MARS model
+
+```{r mars}
+ctrl1 <- trainControl(method = "cv", number = 10)
+mars_grid <- expand.grid(degree = 1:3, 
+                         nprune = 6:20)
+
+set.seed(2)
+mars.fit <- train(x, y,
+                  method = "earth",
+                  tuneGrid = mars_grid,
+                  trControl = ctrl1)
+## Plot of grid tunning
+ggplot(mars.fit)
+```
+
+The final model is:
+
+```{r coeff}
+mars.fit$bestTune
+## Coefficient of the MARS model
+coef(mars.fit$finalModel)
+```
+
+The optimal model with minimum prediction error has 17 retained terms, and 1 degree of interaction. 
+
+### Produce the PDP plots
+
+PDP of Room.Board predictor
+```{r pdp}
+pdp::partial(mars.fit, pred.var = c("room_board"), grid.resolution = 10) |>  autoplot()
+```
+
+### Test Error
+
+```{r te.pdp}
+mars.pred =
+  predict(mars.fit, newdata = college_df[-rowTrain,])
+## Test Error (MSE)
+t.mse =
+  mean((college_df[-rowTrain,]$outstate - mars.pred)^2)
+t.mse
+```
+
+The test error (MSE) of the MARS model is 2774623.
+
+## (c) Construct a generalized additive model (GAM) to predict the response variable. Does your GAM model include all the predictors? For the nonlinear terms included in your model, generate plots to visualize these relationships and discuss your observations. Report the test error.
+
+### Fit GAM using all predictors
+
+```{r gam}
+gam.full =
+  train.set |> 
+  gam(outstate ~ s(apps)+s(accept)+s(enroll)+s(top10perc)+s(top25perc)+s(f_undergrad)+s(p_undergrad)+s(room_board)+s(books)+s(personal)+s(ph_d)+s(terminal)+s(s_f_ratio)+s(perc_alumni)+s(expend)+s(grad_rate), data =_ )
+
+summary(gam.full)
+gam.full$df.residual
+# Training RMSE
+sqrt(mean(residuals.gam(gam.full,type="response")^2))
+```
+
+The total degrees of freedom of the GAM model is 405.2527. The p-value of some of the predictors show that the predictor might not be significant: `top25perc`, `f_undergrad`, `p_undergrad`, `books`, `ph_d`,and `terminal` Also, among the significant predictors, some of the them are likely to have linear relationship with the model: `enroll`, `top10perc`, and `personal` 
+
+The deviance explained by the model is 83.7%, and the adjusted R-squared is 0.819, which means the model explains the data well. The RMSE os the model is 1503.405. 
+
+Plot results:
+
+The plots of each predictor v.s. the response (`outstate`) shown inthe pdf named `gam.full.pdf` file:
+
+```{r plot}
+# Open a PDF device with specified width and height
+pdf("gam_plot.pdf", width = 6, height = 4)
+
+# Plot the GAM model
+plot(gam.full)
+
+# Close the PDF device
+dev.off()
+
+```
+
+### Test Error
+
+```{r te}
+gam.pred =
+  predict(gam.full, newdata = college_df[-rowTrain,])
+## Test Error (MSE)
+t.mse =
+  mean((college_df[-rowTrain,]$outstate - gam.pred)^2)
+t.mse
+```
+
+The test error (MSE) of the GAM model is 3012372. 
+
+
+
+## (d) In this dataset, would you favor a MARS model over a linear model for predicting out-of- state tuition? If so, why? More broadly, in general applications, do you consider a MARS model to be superior to a linear model? Please share your reasoning.
+
+According to (c) and (d), we found that the test error of GAM model is 3012372, and the test error of MARS model is 2774623. For data prediction, we want to choose the model with the smaller test error, so we choose MARS model for out-of-state prediction. 
